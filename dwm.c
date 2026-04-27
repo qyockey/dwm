@@ -36,6 +36,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xproto.h>
 #include <X11/Xutil.h>
+#include <X11/XF86keysym.h>
 #ifdef XINERAMA
 #include <X11/extensions/Xinerama.h>
 #endif /* XINERAMA */
@@ -55,6 +56,9 @@
 #define HEIGHT(X)               ((X)->h + 2 * (X)->bw)
 #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
 #define TEXTW(X)                (drw_fontset_getwidth(drw, (X)) + lrpad)
+
+#define MAXBRIGHTNESS	        (62451U)
+#define PATHBRIGHTNESS          "/sys/class/backlight/amdgpu_bl1/brightness"
 
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
@@ -148,6 +152,8 @@ static void arrangemon(Monitor *m);
 static void attach(Client *c);
 static void attachstack(Client *c);
 static void buttonpress(XEvent *e);
+static void changebrightness(const Arg *arg);
+static void changevolume(const Arg *arg);
 static void checkotherwm(void);
 static void cleanup(void);
 static void cleanupmon(Monitor *mon);
@@ -188,6 +194,7 @@ static void pop(Client *c);
 static void propertynotify(XEvent *e);
 static void quit(const Arg *arg);
 static Monitor *recttomon(int x, int y, int w, int h);
+static void refreshstatus(void);
 static void resize(Client *c, int x, int y, int w, int h, int interact);
 static void resizeclient(Client *c, int x, int y, int w, int h);
 static void resizemouse(const Arg *arg);
@@ -205,6 +212,7 @@ static void setup(void);
 static void seturgent(Client *c, int urg);
 static void showhide(Client *c);
 static void spawn(const Arg *arg);
+static void spawnstatus();
 static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
 static void tile(Monitor *m);
@@ -266,6 +274,7 @@ static Display *dpy;
 static Drw *drw;
 static Monitor *mons, *selmon;
 static Window root, wmcheckwin;
+static pid_t statuspid;
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
@@ -454,6 +463,60 @@ buttonpress(XEvent *e)
 		if (click == buttons[i].click && buttons[i].func && buttons[i].button == ev->button
 		&& CLEANMASK(buttons[i].mask) == CLEANMASK(ev->state))
 			buttons[i].func(click == ClkTagBar && buttons[i].arg.i == 0 ? &arg : &buttons[i].arg);
+}
+
+void
+changebrightness(const Arg *arg)
+{
+	FILE *f;
+	int current, new;
+
+	if (!(f = fopen(PATHBRIGHTNESS, "r")))
+		return;
+
+	fscanf(f, "%d", &current);
+	fclose(f);
+
+	new = current + arg->i;
+	if (new < 0)
+		new = 0;
+	else if (new > MAXBRIGHTNESS)
+		new = MAXBRIGHTNESS;
+
+	if (!(f = fopen(PATHBRIGHTNESS, "w")))
+		return;
+
+	fprintf(f, "%d", new);
+	fclose(f);
+}
+
+void
+changevolume(const Arg *arg)
+{
+	Arg spawnarg;
+	char changestr[7];
+	const char *volcmd[]  = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", changestr, NULL };
+	const char *mutecmd[]  = { "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle", NULL };
+
+	if (arg->i == 0) {
+		spawnarg.v = mutecmd;
+	} else {
+		char sign;
+		float magnitude;
+		if (arg->i > 0) {
+			sign = '+';
+			magnitude = (float) arg->i / 100.0;
+		} else {
+			sign = '-';
+			magnitude = -(float) arg->i / 100.0;
+		}
+		snprintf(changestr, sizeof(changestr), "%1.2f%c", magnitude,
+				sign);
+		spawnarg.v = volcmd;
+	}
+
+	spawn(&spawnarg);
+	refreshstatus();
 }
 
 void
@@ -1276,6 +1339,12 @@ recttomon(int x, int y, int w, int h)
 }
 
 void
+refreshstatus(void)
+{
+	kill(statuspid, SIGUSR1);
+}
+
+void
 resize(Client *c, int x, int y, int w, int h, int interact)
 {
 	if (applysizehints(c, &x, &y, &w, &h, interact))
@@ -1590,6 +1659,7 @@ setup(void)
 	/* init bars */
 	updatebars();
 	updatestatus();
+	spawnstatus();
 	/* supporting window for NetWMCheck */
 	wmcheckwin = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0);
 	XChangeProperty(dpy, wmcheckwin, netatom[NetWMCheck], XA_WINDOW, 32,
@@ -1663,6 +1733,31 @@ spawn(const Arg *arg)
 
 		execvp(((char **)arg->v)[0], (char **)arg->v);
 		die("dwm: execvp '%s' failed:", ((char **)arg->v)[0]);
+	}
+}
+
+void
+spawnstatus(void)
+{
+	static char *statuscmd[] = { "dwmstatus", NULL };
+	pid_t forkpid;
+
+	struct sigaction sa;
+
+	if ((forkpid = fork()) == 0) {
+		if (dpy)
+			close(ConnectionNumber(dpy));
+		setsid();
+
+		sigfillset(&sa.sa_mask);
+		sa.sa_flags = 0;
+		sa.sa_handler = SIG_DFL;
+		sigaction(SIGCHLD, &sa, NULL);
+
+		execvp(statuscmd[0], statuscmd);
+		die("dwm: execvp '%s' failed:", statuscmd[0]);
+	} else {
+		statuspid = forkpid;
 	}
 }
 
