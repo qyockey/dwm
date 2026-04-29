@@ -57,8 +57,8 @@
 #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
 #define TEXTW(X)                (drw_fontset_getwidth(drw, (X)) + lrpad)
 
-#define MAXBRIGHTNESS	        (62451U)
-#define PATHBRIGHTNESS          "/sys/class/backlight/amdgpu_bl1/brightness"
+#define MAXBRIGHTNESS	        (496)
+#define PATHBRIGHTNESS          "/sys/class/backlight/intel_backlight/brightness"
 
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
